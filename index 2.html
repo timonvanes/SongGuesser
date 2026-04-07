@@ -1,0 +1,2810 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>SongGuesser</title>
+
+<!-- PWA -->
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="SongGuesser">
+<meta name="theme-color" content="#0d0d0d">
+
+<!-- App icon (inline SVG als data-URL) -->
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='100' fill='%230d0d0d'/%3E%3Ctext x='256' y='340' font-size='280' text-anchor='middle' font-family='Arial Black,sans-serif' fill='%23ff3c3c'%3E♫%3C/text%3E%3C/svg%3E">
+
+<!-- Inline manifest -->
+<script>
+const _manifest = {
+  name: 'SongGuesser',
+  short_name: 'SongGuesser',
+  description: 'Raad het nummer, artiest en jaar',
+  start_url: '.',
+  display: 'standalone',
+  background_color: '#0d0d0d',
+  theme_color: '#0d0d0d',
+  icons: [
+    {
+      src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='100' fill='%230d0d0d'/%3E%3Ctext x='256' y='340' font-size='280' text-anchor='middle' font-family='Arial Black,sans-serif' fill='%23ff3c3c'%3E%E2%99%AB%3C/text%3E%3C/svg%3E",
+      sizes: '512x512',
+      type: 'image/svg+xml',
+      purpose: 'any maskable'
+    }
+  ]
+};
+const _blob = new Blob([JSON.stringify(_manifest)], {type: 'application/json'});
+const _url  = URL.createObjectURL(_blob);
+const _link = document.createElement('link');
+_link.rel = 'manifest'; _link.href = _url;
+document.currentScript.parentNode.appendChild(_link);
+</script>
+
+<!-- Service Worker voor offline -->
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    const sw = `
+const CACHE = 'songguesser-v1';
+self.addEventListener('install', e => {
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(['./', './index.html'])));
+  self.skipWaiting();
+});
+self.addEventListener('activate', e => {
+  e.waitUntil(caches.keys().then(keys =>
+    Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
+  ));
+  self.clients.claim();
+});
+self.addEventListener('fetch', e => {
+  e.respondWith(
+    fetch(e.request).catch(() => caches.match(e.request))
+  );
+});`;
+    const blob = new Blob([sw], {type: 'application/javascript'});
+    navigator.serviceWorker.register(URL.createObjectURL(blob))
+      .catch(() => {});
+  });
+}
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0d0d0d;
+    --surface: #161616;
+    --card: #1e1e1e;
+    --accent: #ff3c3c;
+    --accent2: #ffb800;
+    --text: #f0ece4;
+    --muted: #666;
+    --border: #2a2a2a;
+    --correct: #22c55e;
+    --wrong: #ef4444;
+    --radius: 12px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'DM Sans', sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    overflow-x: hidden;
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  /* Grain overlay */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 9999;
+    opacity: 0.4;
+  }
+
+  header {
+    width: 100%;
+    max-width: 720px;
+    padding: 32px 24px 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+  }
+
+  .logo {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 48px;
+    letter-spacing: 3px;
+    line-height: 1;
+    color: var(--text);
+  }
+  .logo span { color: var(--accent); }
+
+  .score-chip {
+    background: var(--card);
+    border: 1px solid var(--border);
+    padding: 6px 16px;
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+    letter-spacing: 0.05em;
+  }
+  .score-chip b { color: var(--accent2); }
+
+  main {
+    width: 100%;
+    max-width: 720px;
+    padding: 32px 24px 64px;
+    flex: 1;
+  }
+
+  /* ---- SCREENS ---- */
+  .screen { display: none; }
+  .screen.active { display: block; }
+
+  /* HOME */
+  .home-hero {
+    text-align: center;
+    padding: 48px 0 40px;
+  }
+  .home-hero h2 {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 72px;
+    line-height: 0.95;
+    letter-spacing: 2px;
+    margin-bottom: 16px;
+  }
+  .home-hero h2 em {
+    color: var(--accent);
+    font-style: normal;
+    display: block;
+  }
+  .home-hero p {
+    color: var(--muted);
+    font-size: 15px;
+    line-height: 1.7;
+    max-width: 420px;
+    margin: 0 auto 36px;
+  }
+
+  .stats-row {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+    margin-bottom: 40px;
+  }
+  .stat-pill {
+    background: var(--card);
+    border: 1px solid var(--border);
+    padding: 10px 20px;
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .stat-pill span { color: var(--accent2); font-weight: 700; }
+
+  .settings-block {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+    margin-bottom: 24px;
+  }
+  .settings-block h3 {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 16px;
+  }
+
+  .option-grid {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .opt-btn {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-family: inherit;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .opt-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .opt-btn.selected { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  .big-btn {
+    display: block;
+    width: 100%;
+    padding: 18px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius);
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 22px;
+    letter-spacing: 2px;
+    cursor: pointer;
+    transition: transform 0.1s, box-shadow 0.1s;
+    box-shadow: 0 4px 24px rgba(255,60,60,0.3);
+  }
+  .big-btn:hover { transform: translateY(-2px); box-shadow: 0 8px 32px rgba(255,60,60,0.4); }
+  .big-btn:active { transform: translateY(0); }
+  .big-btn.secondary {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    box-shadow: none;
+    font-size: 16px;
+    letter-spacing: 1px;
+    margin-top: 10px;
+  }
+  .big-btn.secondary:hover { border-color: var(--text); color: var(--text); }
+
+  /* QUIZ SCREEN */
+  .progress-bar-wrap {
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    margin-bottom: 28px;
+    overflow: hidden;
+  }
+  .progress-bar-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+    transition: width 0.4s ease;
+  }
+
+  .q-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+  }
+  .q-num {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .q-tag {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    background: rgba(255,60,60,0.1);
+    padding: 4px 10px;
+    border-radius: 999px;
+  }
+
+  /* Song reveal card */
+  .song-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 32px;
+    margin-bottom: 28px;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+  }
+  .song-card::before {
+    content: '♫';
+    position: absolute;
+    top: -10px;
+    right: 16px;
+    font-size: 120px;
+    opacity: 0.04;
+    line-height: 1;
+  }
+  .song-title {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 36px;
+    letter-spacing: 1px;
+    line-height: 1.1;
+    margin-bottom: 8px;
+  }
+  .song-artist {
+    font-size: 15px;
+    color: var(--muted);
+    font-weight: 400;
+  }
+  .song-artist b { color: var(--accent2); font-weight: 600; }
+  .song-year-reveal {
+    margin-top: 16px;
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 64px;
+    letter-spacing: 4px;
+    color: var(--accent);
+    opacity: 0;
+    transform: scale(0.8);
+    transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+  .song-year-reveal.show { opacity: 1; transform: scale(1); }
+
+  /* Guess box */
+  .guess-section { margin-bottom: 20px; }
+  .guess-section label {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+  .guess-input-row { display: flex; gap: 10px; }
+  .guess-input {
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 12px 16px;
+    border-radius: 10px;
+    font-family: inherit;
+    font-size: 15px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .guess-input:focus { border-color: var(--accent); }
+  .guess-input.correct { border-color: var(--correct); background: rgba(34,197,94,0.07); }
+  .guess-input.wrong { border-color: var(--wrong); background: rgba(239,68,68,0.07); }
+
+  .year-input-wrap { position: relative; }
+  .year-input-wrap .guess-input { text-align: center; font-family: 'Bebas Neue', sans-serif; font-size: 22px; letter-spacing: 2px; width: 110px; flex: none; }
+
+  .submit-row {
+    display: flex;
+    gap: 10px;
+    margin-top: 20px;
+  }
+  .submit-row .big-btn { font-size: 17px; padding: 14px; }
+
+  /* Feedback */
+  .feedback-bar {
+    padding: 14px 20px;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 20px;
+    display: none;
+    align-items: center;
+    gap: 10px;
+  }
+  .feedback-bar.correct { display: flex; background: rgba(34,197,94,0.12); border: 1px solid rgba(34,197,94,0.25); color: var(--correct); }
+  .feedback-bar.wrong { display: flex; background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.2); color: var(--wrong); }
+  .feedback-bar.neutral { display: flex; background: rgba(255,184,0,0.07); border: 1px solid rgba(255,184,0,0.2); color: var(--text); }
+  .feedback-icon { font-size: 20px; }
+
+  /* Score breakdown (results) */
+  .results-wrap { text-align: center; padding: 24px 0; }
+  .results-wrap h2 {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 56px;
+    letter-spacing: 2px;
+    margin-bottom: 4px;
+  }
+  .final-score {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 96px;
+    line-height: 1;
+    color: var(--accent);
+    letter-spacing: 4px;
+    margin: 8px 0;
+  }
+  .score-label { color: var(--muted); font-size: 14px; margin-bottom: 32px; }
+  .breakdown-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 32px;
+  }
+  .breakdown-item {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px 12px;
+  }
+  .breakdown-item .val {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 40px;
+    letter-spacing: 2px;
+    display: block;
+  }
+  .breakdown-item .lbl { font-size: 11px; color: var(--muted); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+  .breakdown-item.hi .val { color: var(--correct); }
+  .breakdown-item.med .val { color: var(--accent2); }
+  .breakdown-item.lo .val { color: var(--wrong); }
+
+  /* Recent history */
+  .history-list { margin-top: 28px; }
+  .history-list h3 { font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); margin-bottom: 12px; text-align: left; }
+  .history-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    font-size: 13px;
+  }
+  .history-item:last-child { border-bottom: none; }
+  .h-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .h-dot.full { background: var(--correct); }
+  .h-dot.partial { background: var(--accent2); }
+  .h-dot.none { background: var(--wrong); }
+  .h-song { flex: 1; }
+  .h-song .title { font-weight: 600; }
+  .h-song .artist { color: var(--muted); font-size: 12px; }
+  .h-pts { font-family: 'Bebas Neue', sans-serif; font-size: 20px; letter-spacing: 1px; }
+
+  /* Fade/slide animations */
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(16px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .screen.active .song-card,
+  .screen.active .guess-section,
+  .screen.active .submit-row {
+    animation: fadeUp 0.35s ease both;
+  }
+  .screen.active .guess-section { animation-delay: 0.05s; }
+  .screen.active .submit-row { animation-delay: 0.1s; }
+
+  .hidden { display: none !important; }
+
+  /* Tooltip */
+  .hint-tag {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 6px;
+  }
+
+  .spinning { animation: spin 1.2s linear infinite; display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Upload screen */
+  .upload-zone {
+    border: 2px dashed var(--border);
+    border-radius: 16px;
+    padding: 48px 24px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+    margin-bottom: 20px;
+  }
+  .upload-zone:hover, .upload-zone.drag { border-color: var(--accent); background: rgba(255,60,60,0.04); }
+  .upload-zone .upload-icon { font-size: 40px; margin-bottom: 12px; }
+  .upload-zone h3 { font-size: 16px; font-weight: 600; margin-bottom: 6px; }
+  .upload-zone p { color: var(--muted); font-size: 13px; line-height: 1.6; }
+  #fileInput { display: none; }
+
+  .upload-stats {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 20px;
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .upload-stats .matched { color: var(--correct); font-weight: 700; }
+  .upload-stats .unmatched { color: var(--muted); font-size: 13px; }
+
+  .matched-list {
+    max-height: 220px;
+    overflow-y: auto;
+    margin-bottom: 20px;
+  }
+  .matched-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .matched-item:last-child { border-bottom: none; }
+  .match-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--correct); flex-shrink: 0; }
+  .match-dot.no { background: var(--muted); }
+  .match-info { flex: 1; }
+  .match-info .song-name { font-weight: 600; }
+  .match-info .file-name { color: var(--muted); font-size: 11px; }
+
+  /* Audio player */
+  .audio-player {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 18px 20px;
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .audio-player.no-file { opacity: 0.4; pointer-events: none; }
+  .play-btn {
+    width: 48px; height: 48px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: none;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+    transition: transform 0.1s, box-shadow 0.15s;
+    box-shadow: 0 4px 16px rgba(255,60,60,0.3);
+    font-size: 18px;
+    color: #fff;
+  }
+  .play-btn:hover { transform: scale(1.08); }
+  .play-btn:active { transform: scale(0.96); }
+  .player-info { flex: 1; min-width: 0; }
+  .player-track { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .player-track.hidden-name { color: var(--muted); font-style: italic; }
+  .player-time { font-size: 12px; color: var(--muted); margin-top: 3px; }
+  .progress-track {
+    width: 100%;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    margin-top: 8px;
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+    width: 0%;
+    transition: width 0.3s linear;
+    pointer-events: none;
+  }
+  .no-mp3-notice {
+    background: rgba(255,184,0,0.08);
+    border: 1px solid rgba(255,184,0,0.2);
+    color: var(--accent2);
+    border-radius: 10px;
+    padding: 12px 16px;
+    font-size: 13px;
+    margin-bottom: 20px;
+    display: none;
+  }
+
+  /* Countdown timer */
+  .countdown-wrap {
+    display: none;
+    align-items: center;
+    gap: 16px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 14px 20px;
+    margin-bottom: 20px;
+  }
+  .countdown-wrap.visible { display: flex; }
+  .countdown-ring { position: relative; width: 54px; height: 54px; flex-shrink: 0; }
+  .countdown-ring svg { transform: rotate(-90deg); }
+  .ring-bg { fill: none; stroke: var(--border); stroke-width: 4; }
+  .ring-fill {
+    fill: none; stroke: var(--accent); stroke-width: 4; stroke-linecap: round;
+    stroke-dasharray: 138.2;
+    stroke-dashoffset: 0;
+    transition: stroke-dashoffset 1s linear, stroke 0.3s;
+  }
+  .ring-fill.urgent { stroke: var(--wrong); }
+  .ring-fill.done { stroke: var(--muted); }
+  .countdown-num {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Bebas Neue', sans-serif; font-size: 20px; letter-spacing: 1px;
+  }
+  .countdown-text { font-size: 13px; color: var(--muted); line-height: 1.6; }
+  .countdown-text b { color: var(--text); font-size: 14px; display: block; }
+
+  /* ---- PLAYLISTS ---- */
+  .playlist-block { margin-top: 0; }
+  .playlist-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 0; border-bottom: 1px solid var(--border);
+  }
+  .playlist-row:last-child { border-bottom: none; }
+  .playlist-name { flex: 1; font-weight: 600; font-size: 14px; }
+  .playlist-meta { color: var(--muted); font-size: 12px; }
+  .pl-play-btn {
+    background: var(--accent); color: #fff; border: none;
+    border-radius: 8px; padding: 7px 14px; font-size: 12px;
+    font-weight: 700; cursor: pointer; font-family: inherit;
+    letter-spacing: 0.05em;
+  }
+  .pl-play-btn:hover { opacity: 0.85; }
+  .pl-del-btn {
+    background: transparent; color: var(--muted); border: 1px solid var(--border);
+    border-radius: 8px; padding: 6px 10px; font-size: 12px; cursor: pointer;
+    font-family: inherit;
+  }
+  .pl-del-btn:hover { color: var(--wrong); border-color: var(--wrong); }
+  .save-playlist-row {
+    display: flex; gap: 8px; margin-top: 12px;
+  }
+  .pl-name-input {
+    flex: 1; background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); padding: 10px 14px; border-radius: 10px;
+    font-family: inherit; font-size: 14px; outline: none;
+  }
+  .pl-name-input:focus { border-color: var(--accent); }
+  .pl-save-btn {
+    background: var(--surface); border: 1px solid var(--border); color: var(--text);
+    padding: 10px 16px; border-radius: 10px; font-family: inherit; font-size: 13px;
+    font-weight: 600; cursor: pointer; white-space: nowrap;
+  }
+  .pl-save-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .no-playlist-msg { color: var(--muted); font-size: 13px; padding: 8px 0; }
+
+  .stop-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 5px 12px;
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+    letter-spacing: 0.04em;
+  }
+  .stop-btn:hover { border-color: var(--wrong); color: var(--wrong); }
+
+  /* ---- LOGIN ---- */
+  .login-wrap {
+    max-width: 420px; margin: 60px auto 0; text-align: center;
+  }
+  .login-logo {
+    font-family: 'Bebas Neue', sans-serif; font-size: 64px; letter-spacing: 4px;
+    margin-bottom: 8px;
+  }
+  .login-logo span { color: var(--accent); }
+  .login-sub { color: var(--muted); font-size: 14px; margin-bottom: 32px; }
+  .profile-card {
+    display: flex; align-items: center; gap: 14px;
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 14px; padding: 16px 20px; margin-bottom: 10px;
+    cursor: pointer; transition: border-color 0.15s, transform 0.1s;
+    text-align: left;
+  }
+  .profile-card:hover { border-color: var(--accent); transform: translateY(-1px); }
+  .profile-avatar {
+    width: 44px; height: 44px; border-radius: 50%;
+    background: var(--accent); display: flex; align-items: center;
+    justify-content: center; font-family: 'Bebas Neue', sans-serif;
+    font-size: 22px; color: #fff; flex-shrink: 0;
+  }
+  .profile-info { flex: 1; }
+  .profile-info .pname { font-weight: 700; font-size: 15px; }
+  .profile-info .pstats { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .profile-del {
+    background: transparent; border: none; color: var(--muted);
+    font-size: 16px; cursor: pointer; padding: 4px 8px; border-radius: 6px;
+  }
+  .profile-del:hover { color: var(--wrong); }
+  .login-divider {
+    color: var(--muted); font-size: 13px; margin: 20px 0 14px;
+    cursor: pointer; text-decoration: underline;
+  }
+  .login-divider:hover { color: var(--text); }
+  .login-input {
+    width: 100%; background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); padding: 14px 18px; border-radius: 12px;
+    font-family: inherit; font-size: 15px; outline: none; margin-bottom: 10px;
+    box-sizing: border-box;
+  }
+  .login-input:focus { border-color: var(--accent); }
+  .login-btn {
+    width: 100%; padding: 14px; background: var(--accent); color: #fff;
+    border: none; border-radius: 12px; font-family: 'Bebas Neue', sans-serif;
+    font-size: 20px; letter-spacing: 2px; cursor: pointer;
+    box-shadow: 0 4px 20px rgba(255,60,60,0.3);
+  }
+  .login-btn:hover { opacity: 0.9; }
+
+  /* Header user chip */
+  .user-chip {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--card); border: 1px solid var(--border);
+    padding: 6px 12px 6px 6px; border-radius: 999px; cursor: pointer;
+    font-size: 13px; font-weight: 600; transition: border-color 0.15s;
+  }
+  .user-chip:hover { border-color: var(--accent); }
+  .user-chip-avatar {
+    width: 26px; height: 26px; border-radius: 50%; background: var(--accent);
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Bebas Neue', sans-serif; font-size: 13px; color: #fff;
+  }
+
+  /* Leaderboard on results */
+  .leaderboard { margin-top: 24px; }
+  .leaderboard h3 { font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); margin-bottom: 12px; text-align: left; }
+  .lb-row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 14px; border-radius: 10px; margin-bottom: 6px;
+    background: var(--card); border: 1px solid var(--border); font-size: 13px;
+  }
+  .lb-row.me { border-color: var(--accent); background: rgba(255,60,60,0.06); }
+  .lb-rank { font-family: 'Bebas Neue', sans-serif; font-size: 18px; width: 24px; color: var(--muted); }
+  .lb-rank.gold { color: #ffd700; }
+  .lb-rank.silver { color: #c0c0c0; }
+  .lb-rank.bronze { color: #cd7f32; }
+  .lb-name { flex: 1; font-weight: 600; }
+  .lb-score { font-family: 'Bebas Neue', sans-serif; font-size: 22px; letter-spacing: 1px; color: var(--accent2); }
+  .lb-games { color: var(--muted); font-size: 11px; }
+
+  /* ---- TABS (MP3 / CSV) ---- */
+  .tab-row {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 16px;
+  }
+  .tab-btn {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 7px 16px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-family: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    letter-spacing: 0.05em;
+    transition: all 0.15s;
+  }
+  .tab-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .tab-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  /* ---- DATABASE SCREEN ---- */
+  .db-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+  }
+  .db-search {
+    flex: 1;
+    min-width: 180px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 10px 14px;
+    border-radius: 10px;
+    font-family: inherit;
+    font-size: 14px;
+    outline: none;
+  }
+  .db-search:focus { border-color: var(--accent); }
+  .db-filter-btn {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 9px 14px;
+    border-radius: 10px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s;
+  }
+  .db-filter-btn:hover { border-color: var(--text); color: var(--text); }
+  .db-filter-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .db-stats {
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 14px;
+  }
+  .db-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .db-table th {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    text-align: left;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+  .db-table th:hover { color: var(--text); }
+  .db-table th .sort-arrow { margin-left: 4px; opacity: 0.4; }
+  .db-table th.sorted .sort-arrow { opacity: 1; color: var(--accent); }
+  .db-table td {
+    padding: 10px 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    vertical-align: middle;
+  }
+  .db-table tr:last-child td { border-bottom: none; }
+  .db-table tr:hover td { background: rgba(255,255,255,0.02); }
+  .db-title { font-weight: 600; }
+  .db-artist { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .db-year { font-family: 'Bebas Neue', sans-serif; font-size: 18px; letter-spacing: 1px; color: var(--accent2); }
+  .db-source {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .db-source.csv { background: rgba(29,185,84,0.1); color: #1DB954; }
+  .db-source.csv-mb { background: rgba(29,185,84,0.2); color: #1DB954; border: 1px solid rgba(29,185,84,0.3); }
+  .db-del-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    width: 28px; height: 28px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s;
+  }
+  .db-del-btn:hover { border-color: var(--wrong); color: var(--wrong); }
+  .db-del-btn:disabled { opacity: 0.2; cursor: not-allowed; }
+  .db-empty { text-align: center; color: var(--muted); padding: 40px 0; font-size: 14px; }
+
+  /* Discogs jaar-ophaal voortgang */
+  .mb-progress-wrap {
+    display: none;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 20px;
+    margin-bottom: 16px;
+  }
+  .mb-progress-wrap.visible { display: block; }
+  .mb-progress-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+    font-size: 13px;
+  }
+  .mb-progress-label { font-weight: 600; color: var(--text); }
+  .mb-progress-count { color: var(--muted); font-size: 12px; }
+  .mb-bar-track {
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-bottom: 10px;
+  }
+  .mb-bar-fill {
+    height: 100%;
+    background: #1DB954;
+    border-radius: 2px;
+    width: 0%;
+    transition: width 0.4s ease;
+  }
+  .mb-progress-actions { display: flex; gap: 8px; }
+  .mb-action-btn {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 5px 12px;
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .mb-action-btn:hover { border-color: var(--text); color: var(--text); }
+  .mb-action-btn.start { background: #1DB954; border-color: #1DB954; color: #fff; }
+  .mb-action-btn.start:hover { opacity: 0.85; }
+
+  /* CSV upload zone — groener tintje om onderscheid te maken */
+  #csvUploadZone {
+    border-color: #1DB954;
+  }
+  #csvUploadZone:hover, #csvUploadZone.drag {
+    border-color: #1DB954;
+    background: rgba(29,185,84,0.05);
+  }
+  #csvFileInput { display: none; }
+
+  /* AI analysis */
+  .ai-status {
+    display: none; align-items: center; gap: 10px;
+    background: rgba(255,184,0,0.07); border: 1px solid rgba(255,184,0,0.2);
+    border-radius: 10px; padding: 12px 16px; margin-top: 10px;
+    font-size: 13px; color: var(--accent2);
+  }
+  .ai-status.visible { display: flex; }
+  .ai-spinner { animation: spin 1s linear infinite; font-size: 16px; }
+  .ai-result-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 13px;
+  }
+  .ai-result-item:last-child { border-bottom: none; }
+  .ai-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent2); flex-shrink: 0; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">Song<span>Guesser</span></div>
+  <div style="display:flex;align-items:center;gap:10px">
+    <div class="score-chip" id="headerScore" style="display:none">Score: <b id="headerScoreVal">0</b></div>
+    <div class="user-chip" id="userChip" style="display:none" onclick="switchUser()">
+      <div class="user-chip-avatar" id="userChipAvatar"></div>
+      <span id="userChipName"></span>
+    </div>
+  </div>
+</header>
+
+<main>
+  <!-- LOGIN SCREEN -->
+  <div class="screen" id="loginScreen">
+    <div class="login-wrap">
+      <div class="login-logo">Song<span>Guesser</span></div>
+      <p class="login-sub">Kies je profiel of maak een nieuw aan</p>
+
+      <div id="profileList"></div>
+
+      <div class="login-divider" id="newProfileToggle">
+        <span onclick="toggleNewProfile()">+ Nieuw profiel aanmaken</span>
+      </div>
+      <div id="newProfileForm" style="display:none">
+        <input class="login-input" id="newProfileName" type="text" placeholder="Jouw naam..." maxlength="20" />
+        <button class="login-btn" onclick="createProfile()">Aanmaken</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- HOME SCREEN -->
+  <div class="screen active" id="homeScreen">
+    <div class="home-hero">
+      <h2>Raad het<em>Nummer</em></h2>
+      <p>Importeer je nummers via Spotify CSV, upload je MP3's en raad het nummer, de artiest én het jaar.</p>
+      <div class="stats-row">
+        <div class="stat-pill"><span id="totalSongs">0</span> nummers</div>
+        <div class="stat-pill">Hoogste score: <span id="bestScore">—</span></div>
+      </div>
+    </div>
+
+    <div class="settings-block">
+      <h3>🎵 Stap 1 — Voeg nummers toe</h3>
+
+      <!-- Tabs -->
+      <div class="tab-row">
+        <button class="tab-btn active" id="tabMp3" onclick="setTab('mp3')">📂 MP3-bestanden</button>
+        <button class="tab-btn" id="tabCsv" onclick="setTab('csv')">🎧 Spotify CSV</button>
+      </div>
+
+      <!-- MP3 panel -->
+      <div id="panelMp3">
+        <div class="upload-zone" id="uploadZone" onclick="document.getElementById('fileInput').click()">
+          <div class="upload-icon">📂</div>
+          <h3>Klik hier of sleep bestanden hierin</h3>
+          <p>Bestandsnamen hoeven niet perfect te kloppen —<br>de app matcht automatisch op songnaam &amp; artiest.</p>
+        </div>
+        <input type="file" id="fileInput" accept=".mp3,.ogg,.wav,.m4a,audio/*" multiple />
+        <div id="uploadStats" class="upload-stats" style="display:none">
+          <div>
+            <span class="matched" id="matchedCount">0</span> nummers gekoppeld
+            <div class="unmatched" id="unmatchedCount"></div>
+          </div>
+          <div style="display:flex;gap:6px">
+            <button class="opt-btn" onclick="clearFiles()" style="font-size:12px;padding:6px 12px">Wissen</button>
+            <button class="opt-btn" onclick="clearIdbMp3s()" style="font-size:12px;padding:6px 12px;color:var(--wrong)">🗑 Opslag wissen</button>
+          </div>
+        </div>
+        <div class="matched-list" id="matchedList"></div>
+        <div class="ai-status" id="aiStatus">
+          <span class="ai-spinner">⚙</span>
+          <span id="aiStatusText">AI analyseert onbekende nummers...</span>
+        </div>
+      </div>
+
+      <!-- CSV panel -->
+      <div id="panelCsv" style="display:none">
+        <!-- Discogs token -->
+        <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 20px;margin-bottom:16px">
+          <div style="font-size:11px;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted);margin-bottom:10px">🔑 Discogs Personal Token</div>
+          <div style="display:flex;gap:8px">
+            <input class="guess-input" id="discogsToken" type="password" placeholder="Plak hier je Discogs personal token..." style="flex:1;font-size:13px;padding:8px 12px" />
+            <button class="mb-action-btn start" onclick="saveDiscogsToken()">Opslaan</button>
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-top:8px">Genereer via <a href="https://www.discogs.com/settings/developers" target="_blank" style="color:#1DB954">discogs.com/settings/developers</a> → "Generate new token"</div>
+          <div id="discogsTokenStatus" style="font-size:12px;margin-top:6px;display:none"></div>
+        </div>
+        <div class="upload-zone" id="csvUploadZone" onclick="document.getElementById('csvFileInput').click()">
+          <svg viewBox="0 0 24 24" fill="#1DB954" style="width:40px;height:40px;margin-bottom:12px;display:block;margin-left:auto;margin-right:auto"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg>
+          <h3>Klik hier of sleep je Spotify CSV hierin</h3>
+          <p>Exporteer via <b>Exportify</b> of een andere Spotify-exporter.<br>De app leest Track Name, Artist Name(s) en Release Date uit.</p>
+        </div>
+        <input type="file" id="csvFileInput" accept=".csv,text/csv" style="display:none" />
+        <div id="csvStats" class="upload-stats" style="display:none">
+          <div>
+            <span class="matched" id="csvCount">0</span> nummers geladen
+            <div class="unmatched" id="csvStatus"></div>
+          </div>
+          <button class="opt-btn" onclick="clearCsv()" style="font-size:12px;padding:6px 12px">Wissen</button>
+        </div>
+        <div class="matched-list" id="csvList"></div>
+
+        <!-- Discogs jaar-ophaal blok -->
+        <div class="mb-progress-wrap" id="mbWrap">
+          <div class="mb-progress-header">
+            <span class="mb-progress-label" id="mbLabel">🎵 Originele uitjaren ophalen via Discogs</span>
+            <span class="mb-progress-count" id="mbCount"></span>
+          </div>
+          <div class="mb-bar-track">
+            <div class="mb-bar-fill" id="mbBarFill"></div>
+          </div>
+          <div class="mb-progress-actions">
+            <button class="mb-action-btn start" id="mbStartBtn" onclick="startDiscogs()">▶ Start ophalen</button>
+            <button class="mb-action-btn" id="mbPauseBtn" onclick="pauseDiscogs()" style="display:none">⏸ Pauzeren</button>
+            <button class="mb-action-btn" id="mbResumeBtn" onclick="resumeDiscogs()" style="display:none">▶ Hervatten</button>
+            <button class="mb-action-btn" id="mbStopBtn" onclick="stopDiscogs()" style="display:none">✕ Stoppen</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-block">
+      <h3>Stap 2 — Instellingen</h3>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:14px">Aantal vragen</p>
+      <div class="option-grid" id="qCountOptions" style="margin-bottom:16px">
+        <button class="opt-btn" data-val="5">5</button>
+        <button class="opt-btn selected" data-val="10">10</button>
+        <button class="opt-btn" data-val="20">20</button>
+        <button class="opt-btn" data-val="9999">Alles</button>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:14px">Wat moet je raden?</p>
+      <div class="option-grid" id="modeOptions">
+        <button class="opt-btn" data-val="song">Alleen nummer</button>
+        <button class="opt-btn" data-val="artist">Alleen artiest</button>
+        <button class="opt-btn" data-val="year">Alleen jaar</button>
+        <button class="opt-btn selected" data-val="all">Alles</button>
+      </div>
+    </div>
+
+
+    <div class="settings-block playlist-block">
+      <h3>📋 Stap 3 — Playlists</h3>
+      <div id="playlistList"><div class="no-playlist-msg">Nog geen opgeslagen playlists.</div></div>
+      <div class="save-playlist-row">
+        <input class="pl-name-input" id="plNameInput" type="text" placeholder="Naam voor huidige selectie..." maxlength="40"/>
+        <button class="pl-save-btn" onclick="savePlaylist()">💾 Opslaan</button>
+      </div>
+    </div>
+
+    <button class="big-btn" onclick="startQuiz()">START QUIZ</button>
+    <button class="big-btn secondary" onclick="showDatabase()">📋 Bekijk database</button>
+  </div>
+
+  <!-- DATABASE SCREEN -->
+  <div class="screen" id="databaseScreen">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:24px">
+      <button class="stop-btn" onclick="showHome()" style="flex-shrink:0">← Terug</button>
+      <h2 style="font-family:'Bebas Neue',sans-serif;font-size:28px;letter-spacing:2px">Database</h2>
+    </div>
+
+    <div class="db-toolbar">
+      <input class="db-search" id="dbSearch" type="text" placeholder="Zoek op titel of artiest..." oninput="renderDatabase()" />
+      <button class="db-filter-btn active" id="dbFilterAll" onclick="setDbFilter('all')">Alles</button>
+      <button class="db-filter-btn" id="dbFilterCsv" onclick="setDbFilter('csv')">CSV</button>
+      <button class="db-filter-btn" id="dbFilterMb" onclick="setDbFilter('mb')">✓ Discogs</button>
+    </div>
+    <div class="db-stats" id="dbStats"></div>
+
+    <!-- Discogs verificatie blok in database -->
+    <div class="mb-progress-wrap" id="dbMbWrap">
+      <div class="mb-progress-header">
+        <span class="mb-progress-label" id="dbMbLabel">🎵 Verificeer uitjaren via Discogs</span>
+        <span class="mb-progress-count" id="dbMbCount"></span>
+      </div>
+      <div class="mb-bar-track">
+        <div class="mb-bar-fill" id="dbMbBarFill"></div>
+      </div>
+      <div class="mb-progress-actions">
+        <button class="mb-action-btn start" id="dbMbStartBtn" onclick="startDiscogsDb()">▶ Verificeer onbekende nummers</button>
+        <button class="mb-action-btn" id="dbMbPauseBtn" onclick="pauseDiscogs()" style="display:none">⏸ Pauzeren</button>
+        <button class="mb-action-btn" id="dbMbResumeBtn" onclick="resumeDiscogs()" style="display:none">▶ Hervatten</button>
+        <button class="mb-action-btn" id="dbMbStopBtn" onclick="stopDiscogs()" style="display:none">✕ Stoppen</button>
+      </div>
+    </div>
+
+    <div style="overflow-x:auto">
+      <table class="db-table">
+        <thead>
+          <tr>
+            <th onclick="setDbSort('t')" id="dbSortT"># Nummer <span class="sort-arrow">↕</span></th>
+            <th onclick="setDbSort('y')" id="dbSortY">Jaar <span class="sort-arrow">↕</span></th>
+            <th>Bron</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="dbTableBody"></tbody>
+      </table>
+    </div>
+    <div class="db-empty hidden" id="dbEmpty">Geen nummers gevonden.</div>
+  </div>
+
+  <!-- QUIZ SCREEN -->
+  <div class="screen" id="quizScreen">
+    <div class="progress-bar-wrap">
+      <div class="progress-bar-fill" id="progressBar" style="width:0%"></div>
+    </div>
+
+    <div class="q-meta">
+      <span class="q-num" id="qNum">Vraag 1 / 10</span>
+      <span class="q-tag" id="qTag">Alles raden</span>
+      <button class="stop-btn" onclick="confirmStop()" title="Stop quiz">✕ Stop</button>
+    </div>
+
+    <div class="song-card" id="songCard">
+      <div class="song-title" id="cardTitle">?</div>
+      <div class="song-artist" id="cardArtist" style="display:none"></div>
+      <div class="song-year-reveal" id="yearReveal"></div>
+    </div>
+
+    <div class="no-mp3-notice" id="noMp3Notice">⚠️ Geen audio gevonden voor dit nummer — raad op geheugen!</div>
+
+    <div class="audio-player" id="audioPlayer">
+      <button class="play-btn" id="playBtn" onclick="togglePlay()">▶</button>
+      <div class="player-info">
+        <div class="player-track hidden-name" id="playerTrack">🎵 Druk op play om te luisteren</div>
+        <div class="player-time" id="playerTime">0:00 / 0:00</div>
+        <div class="progress-track" id="progressTrack" onclick="seekAudio(event)">
+          <div class="progress-fill" id="progressFill"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="countdown-wrap" id="countdownWrap">
+      <div class="countdown-ring">
+        <svg width="54" height="54" viewBox="0 0 54 54">
+          <circle class="ring-bg" cx="27" cy="27" r="22"/>
+          <circle class="ring-fill" id="ringFill" cx="27" cy="27" r="22"/>
+        </svg>
+        <div class="countdown-num" id="countdownNum">30</div>
+      </div>
+      <div class="countdown-text">
+        <b id="countdownTitle">Fragment speelt af...</b>
+        Raad het nummer, artiest en jaar.<br>De muziek stopt na 30 seconden.
+      </div>
+    </div>
+
+    <div class="feedback-bar" id="feedbackBar">
+      <span class="feedback-icon" id="feedbackIcon"></span>
+      <span id="feedbackText"></span>
+    </div>
+
+    <div id="guessFields">
+      <div class="guess-section" id="songGuessWrap">
+        <label>🎵 Naam van het nummer</label>
+        <div class="guess-input-row">
+          <input class="guess-input" id="songGuess" type="text" placeholder="Bijv. Never Gonna Give You Up" autocomplete="off" />
+        </div>
+      </div>
+
+      <div class="guess-section" id="artistGuessWrap">
+        <label>🎤 Artiest</label>
+        <div class="guess-input-row">
+          <input class="guess-input" id="artistGuess" type="text" placeholder="Bijv. Rick Astley" autocomplete="off" />
+        </div>
+      </div>
+
+      <div class="guess-section" id="yearGuessWrap">
+        <label>📅 Jaar van release</label>
+        <div class="year-input-wrap guess-input-row">
+          <input class="guess-input" id="yearGuess" type="number" placeholder="1984" min="1930" max="2024" autocomplete="off" />
+        </div>
+        <div class="hint-tag">±2 jaar telt ook als goed</div>
+      </div>
+    </div>
+
+    <div class="submit-row" id="submitRow">
+      <button class="big-btn" id="submitBtn" onclick="submitGuess()">CONTROLEER</button>
+    </div>
+
+    <div class="submit-row hidden" id="nextRow">
+      <button class="big-btn" id="nextBtn" onclick="nextQuestion()">VOLGENDE →</button>
+    </div>
+  </div>
+
+  <!-- RESULTS SCREEN -->
+  <div class="screen" id="resultsScreen">
+    <div class="results-wrap">
+      <h2>Ronde afgelopen!</h2>
+      <div class="final-score" id="finalScore">0</div>
+      <div class="score-label" id="scoreLabel">punten behaald</div>
+
+      <div class="breakdown-grid">
+        <div class="breakdown-item hi">
+          <span class="val" id="fullCorrect">0</span>
+          <span class="lbl">Alles goed</span>
+        </div>
+        <div class="breakdown-item med">
+          <span class="val" id="partCorrect">0</span>
+          <span class="lbl">Gedeeltelijk</span>
+        </div>
+        <div class="breakdown-item lo">
+          <span class="val" id="noneCorrect">0</span>
+          <span class="lbl">Mis</span>
+        </div>
+      </div>
+
+      <div class="history-list" id="historyList"></div>
+    </div>
+
+    <div class="leaderboard" id="leaderboard"></div>
+    <button class="big-btn" onclick="startQuiz()">OPNIEUW SPELEN</button>
+    <button class="big-btn secondary" onclick="showHome()">← INSTELLINGEN</button>
+  </div>
+</main>
+
+<script>
+const SONG_LIST = [];
+// State
+let settings = { count: 10, mode: 'all' };
+let queue = [];
+let current = 0;
+let totalScore = 0;
+let history = [];
+let answered = false;
+let bestScore = parseInt(localStorage.getItem('hitsterBest') || '0');
+
+// ---- INDEXEDDB MP3 OPSLAG ----
+let idb = null;
+
+function openIdb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('SongGuesserMP3s', 1);
+    req.onupgradeneeded = e => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains('mp3s')) {
+        db.createObjectStore('mp3s', { keyPath: 'key' });
+      }
+    };
+    req.onsuccess = e => { idb = e.target.result; resolve(idb); };
+    req.onerror   = e => reject(e.target.error);
+  });
+}
+
+function idbSave(key, blob, filename) {
+  return new Promise((resolve, reject) => {
+    const tx = idb.transaction('mp3s', 'readwrite');
+    tx.objectStore('mp3s').put({ key, blob, filename });
+    tx.oncomplete = resolve;
+    tx.onerror = e => reject(e.target.error);
+  });
+}
+
+function idbGet(key) {
+  return new Promise((resolve, reject) => {
+    const tx = idb.transaction('mp3s', 'readonly');
+    const req = tx.objectStore('mp3s').get(key);
+    req.onsuccess = e => resolve(e.target.result || null);
+    req.onerror = e => reject(e.target.error);
+  });
+}
+
+function idbDelete(key) {
+  return new Promise((resolve, reject) => {
+    const tx = idb.transaction('mp3s', 'readwrite');
+    tx.objectStore('mp3s').delete(key);
+    tx.oncomplete = resolve;
+    tx.onerror = e => reject(e.target.error);
+  });
+}
+
+function idbGetAll() {
+  return new Promise((resolve, reject) => {
+    const tx = idb.transaction('mp3s', 'readonly');
+    const req = tx.objectStore('mp3s').getAll();
+    req.onsuccess = e => resolve(e.target.result || []);
+    req.onerror = e => reject(e.target.error);
+  });
+}
+
+function idbClear() {
+  return new Promise((resolve, reject) => {
+    const tx = idb.transaction('mp3s', 'readwrite');
+    tx.objectStore('mp3s').clear();
+    tx.oncomplete = resolve;
+    tx.onerror = e => reject(e.target.error);
+  });
+}
+
+// Laad alle opgeslagen MP3s uit IndexedDB in mp3Map/mp3ByIndex
+async function loadMp3sFromIdb() {
+  try {
+    await openIdb();
+    const all = await idbGetAll();
+    if (!all.length) return;
+    let loaded = 0;
+    all.forEach(entry => {
+      const url = URL.createObjectURL(entry.blob);
+      // Zoek bijbehorende song op key (genormaliseerde titel)
+      const song = allSongs().find(s => normStr(s.t) === entry.key);
+      if (song) {
+        const idx = allSongs().indexOf(song);
+        const mp3Entry = { url, filename: entry.filename, song, score: 100, fromIdb: true };
+        mp3ByIndex[idx] = mp3Entry;
+        mp3Map[entry.key] = mp3Entry;
+        loaded++;
+      }
+    });
+    if (loaded > 0) {
+      $('uploadStats').style.display = 'flex';
+      $('matchedCount').textContent = loaded;
+      $('unmatchedCount').textContent = `✓ Geladen uit opslag`;
+      // Toon lijst
+      const list = $('matchedList');
+      list.innerHTML = '';
+      all.forEach(entry => {
+        const song = allSongs().find(s => normStr(s.t) === entry.key);
+        if (!song) return;
+        const div = document.createElement('div');
+        div.className = 'matched-item';
+        div.innerHTML = `
+          <div class="match-dot" style="background:var(--accent2)"></div>
+          <div class="match-info">
+            <div class="song-name">${song.t} <span style="color:var(--muted);font-size:11px;font-weight:400">— ${song.a}</span></div>
+            <div class="file-name">💾 Opgeslagen</div>
+          </div>`;
+        list.appendChild(div);
+      });
+    }
+  } catch(e) {
+    console.error('IndexedDB laad fout:', e);
+  }
+}
+
+// MP3 map: normalized key -> { url, filename }
+let mp3Map = {};
+let audio = new Audio();
+let isPlaying = false;
+
+const $ = id => document.getElementById(id);
+
+// ---- MP3 MATCHING ----
+function normStr(s) {
+  return s.toLowerCase()
+    .replace(/[_\-–—]/g, ' ')
+    .replace(/\(.*?\)/g, ' ')
+    .replace(/\[.*?\]/g, ' ')
+    .replace(/feat[^a-z].*/i, ' ')
+    .replace(/ft[^a-z].*/i, ' ')
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function wordOverlap(a, b) {
+  const wa = new Set(a.split(' ').filter(w => w.length > 2));
+  const wb = b.split(' ').filter(w => w.length > 2);
+  if (wa.size === 0 || wb.length === 0) return 0;
+  const hits = wb.filter(w => wa.has(w)).length;
+  return hits / Math.max(wa.size, wb.length);
+}
+
+function matchScore(filename, song) {
+  const fn = normStr(filename.replace(/\.mp3$/i, ''));
+  const title = normStr(song.t);
+  const artist = normStr(song.a);
+  // Strong: filename contains full title
+  if (fn.includes(title) && title.length > 4) return 100;
+  if (title.includes(fn) && fn.length > 4) return 90;
+  // Word overlap scoring
+  const titleScore = wordOverlap(fn, title) * 70;
+  const artistScore = wordOverlap(fn, artist) * 30;
+  return titleScore + artistScore;
+}
+
+// mp3Map: key = song index in SONG_LIST -> { url, filename, song }
+// Also store by index so getMp3 is guaranteed consistent
+let mp3ByIndex = {};
+
+// ---- SUPABASE ----
+const SUPABASE_URL = 'https://iyabwggfpgwdwwllqjnw.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_xQeiT_09iOb0lKeOuqjsBw_KALCH0zH';
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// customSongs: in-memory, gesynchroniseerd met Supabase
+let customSongs = [];
+
+async function loadCustomSongs() {
+  try {
+    const { data, error } = await sb.from('songs').select('*').order('title');
+    if (error) throw error;
+    customSongs = (data || []).map(row => ({
+      id:         row.id,
+      t:          row.title,
+      a:          row.artist,
+      a1:         row.artist_first,
+      y:          row.year,
+      mbVerified: row.verified,
+      yearSource: row.year_source
+    }));
+    $('totalSongs').textContent = customSongs.length;
+  } catch(e) {
+    console.error('Supabase laad fout:', e);
+    // Fallback naar localStorage als offline
+    customSongs = JSON.parse(localStorage.getItem('hitsterCustomSongs') || '[]');
+  }
+}
+
+async function saveCustomSongs() {
+  // Sla lokaal op als fallback
+  localStorage.setItem('hitsterCustomSongs', JSON.stringify(customSongs));
+}
+
+async function upsertSong(song) {
+  try {
+    const row = {
+      title:       song.t,
+      artist:      song.a,
+      artist_first: song.a1 || null,
+      year:        song.y || null,
+      verified:    song.mbVerified || false,
+      year_source: song.yearSource || null
+    };
+    if (song.id) row.id = song.id;
+    const { data, error } = await sb.from('songs').upsert(row, { onConflict: 'title,artist' }).select().single();
+    if (error) throw error;
+    // Sla het id op in het lokale object
+    song.id = data.id;
+  } catch(e) {
+    console.error('Supabase upsert fout:', e.message);
+  }
+}
+
+async function deleteSongFromDb(song) {
+  if (!song.id) return;
+  try {
+    const { error } = await sb.from('songs').delete().eq('id', song.id);
+    if (error) throw error;
+  } catch(e) {
+    console.error('Supabase delete fout:', e.message);
+  }
+}
+
+function allSongs() {
+  return customSongs;
+}
+
+function buildMp3Map(files) {
+  Object.values(mp3ByIndex).forEach(e => { if (e.url) URL.revokeObjectURL(e.url); });
+  mp3Map = {};
+  mp3ByIndex = {};
+  const usedIndices = new Set();
+  const results = [];
+  const unmatched = [];
+
+  Array.from(files).forEach(file => {
+    let bestIdx = -1, bestS = 0;
+    allSongs().forEach((song, idx) => {
+      if (usedIndices.has(idx)) return;
+      const s = matchScore(file.name, song);
+      if (s > bestS) { bestS = s; bestIdx = idx; }
+    });
+
+    if (bestIdx >= 0 && bestS >= 30) {
+      usedIndices.add(bestIdx);
+      const song = allSongs()[bestIdx];
+      const entry = { url: URL.createObjectURL(file), filename: file.name, song, score: Math.round(bestS) };
+      mp3ByIndex[bestIdx] = entry;
+      mp3Map[normStr(song.t)] = entry;
+      results.push({ song, filename: file.name, matched: true, score: Math.round(bestS) });
+    } else {
+      results.push({ song: null, filename: file.name, matched: false, file });
+      unmatched.push({ filename: file.name, file });
+    }
+  });
+  return { results, unmatched };
+}
+
+function getMp3(song) {
+  const idx = allSongs().indexOf(song);
+  if (idx >= 0 && mp3ByIndex[idx]) return mp3ByIndex[idx];
+  return mp3Map[normStr(song.t)] || null;
+}
+
+async function analyzeWithAI(unmatchedFiles) {
+  if (!unmatchedFiles.length) return;
+  const aiStatus = $('aiStatus');
+  aiStatus.classList.add('visible');
+  $('aiStatusText').textContent = `AI analyseert ${unmatchedFiles.length} onbekend${unmatchedFiles.length > 1 ? 'e nummers' : ' nummer'}...`;
+
+  const filenames = unmatchedFiles.map(u => u.filename).join('\n');
+
+  try {
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        system: 'You are a music expert. Given audio filenames, identify the song title, artist, and release year. Return ONLY valid JSON, no markdown, no explanation. Format: [{"t":"Song Title","a":"Artist Name","y":1999}, ...]',
+        messages: [{
+          role: 'user',
+          content: `Identify these songs from their filenames. Return a JSON array with one object per filename in the same order:\n${filenames}`
+        }]
+      })
+    });
+
+    const data = await resp.json();
+    const text = data.content?.find(b => b.type === 'text')?.text || '[]';
+    const identified = JSON.parse(text.replace(/```json|```/g, '').trim());
+
+    let addedCount = 0;
+    identified.forEach((song, i) => {
+      if (!song.t || !song.a || !song.y) return;
+      const file = unmatchedFiles[i]?.file;
+      if (!file) return;
+
+      // Check not already in lists
+      const alreadyExists = allSongs().some(s =>
+        normStr(s.t) === normStr(song.t) && normStr(s.a) === normStr(song.a)
+      );
+
+      const newSong = { t: song.t, a: song.a, y: parseInt(song.y) };
+      if (!alreadyExists) {
+        customSongs.push(newSong);
+        saveCustomSongs();
+      }
+
+      // Add to mp3 map using index in allSongs()
+      const idx = allSongs().indexOf(newSong) !== -1
+        ? allSongs().indexOf(newSong)
+        : allSongs().findIndex(s => normStr(s.t) === normStr(song.t));
+      const entry = { url: URL.createObjectURL(file), filename: file.name, song: newSong, score: 99 };
+      if (idx >= 0) mp3ByIndex[idx] = entry;
+      mp3Map[normStr(song.t)] = entry;
+      addedCount++;
+
+      // Update the unmatched row in UI
+      const list = $('matchedList');
+      const rows = list.querySelectorAll('.matched-item');
+      rows.forEach(row => {
+        if (row.querySelector('.file-name')?.textContent.includes(file.name)) {
+          row.innerHTML = `
+            <div class="match-dot" style="background:var(--accent2)"></div>
+            <div class="match-info">
+              <div class="song-name">${song.t} <span style="color:var(--muted);font-size:11px;font-weight:400">— ${song.a}</span> <span style="color:var(--accent2);font-size:11px">✦ AI</span></div>
+              <div class="file-name">📁 ${file.name}</div>
+            </div>`;
+        }
+      });
+    });
+
+    $('matchedCount').textContent = parseInt($('matchedCount').textContent) + addedCount;
+    aiStatus.classList.remove('visible');
+    if (addedCount > 0) {
+      const unmatchedEl = $('unmatchedCount');
+      const remaining = unmatchedFiles.length - addedCount;
+      unmatchedEl.textContent = remaining > 0 ? `${remaining} niet herkend` : '✓ Alles herkend';
+    }
+  } catch(e) {
+    $('aiStatusText').textContent = '⚠️ AI analyse mislukt — controleer je internetverbinding.';
+    console.error('AI error:', e);
+  }
+}
+
+// ---- UPLOAD UI ----
+const fileInput = $('fileInput');
+const uploadZone = $('uploadZone');
+
+fileInput.addEventListener('change', e => handleFiles(e.target.files));
+uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('drag'); });
+uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag'));
+uploadZone.addEventListener('drop', e => {
+  e.preventDefault();
+  uploadZone.classList.remove('drag');
+  handleFiles(e.dataTransfer.files);
+});
+
+async function handleFiles(files) {
+  if (!files.length) return;
+  await openIdb();
+  const { results, unmatched } = buildMp3Map(files);
+  const matched = results.filter(r => r.matched);
+
+  $('uploadStats').style.display = 'flex';
+  $('matchedCount').textContent = matched.length;
+  $('unmatchedCount').textContent = unmatched.length > 0
+    ? `${unmatched.length} worden geanalyseerd...`
+    : '✓ Alles herkend';
+
+  const list = $('matchedList');
+  list.innerHTML = '';
+  results.forEach(r => {
+    const div = document.createElement('div');
+    div.className = 'matched-item';
+    div.innerHTML = r.matched
+      ? `<div class="match-dot"></div>
+         <div class="match-info">
+           <div class="song-name">${r.song.t} <span style="color:var(--muted);font-size:11px;font-weight:400">— ${r.song.a}</span></div>
+           <div class="file-name">📁 ${r.filename}</div>
+         </div>`
+      : `<div class="match-dot no"></div>
+         <div class="match-info">
+           <div class="song-name" style="color:var(--muted)">⚙ AI analyseert...</div>
+           <div class="file-name">📁 ${r.filename}</div>
+         </div>`;
+    list.appendChild(div);
+  });
+
+  // Sla gematchte MP3s op in IndexedDB
+  for (const r of matched) {
+    try {
+      const key = normStr(r.song.t);
+      // Zoek het originele File object
+      const file = Array.from(files).find(f => f.name === r.filename);
+      if (file) await idbSave(key, file, file.name);
+    } catch(e) {
+      console.warn('IndexedDB opslaan mislukt:', e);
+    }
+  }
+
+  if (unmatched.length > 0) analyzeWithAI(unmatched);
+}
+
+function clearFiles() {
+  // Wis alleen de UI en geheugen, NIET IndexedDB
+  Object.values(mp3ByIndex).forEach(e => { if (e.url && !e.fromIdb) URL.revokeObjectURL(e.url); });
+  mp3Map = {};
+  mp3ByIndex = {};
+  fileInput.value = '';
+  $('uploadStats').style.display = 'none';
+  $('matchedList').innerHTML = '';
+}
+
+async function clearIdbMp3s() {
+  if (!confirm('Alle opgeslagen MP3-bestanden verwijderen? Je moet ze daarna opnieuw uploaden.')) return;
+  try {
+    await openIdb();
+    await idbClear();
+    clearFiles();
+    alert('✓ Alle MP3s verwijderd uit opslag.');
+  } catch(e) {
+    console.error('IndexedDB wissen mislukt:', e);
+  }
+}
+
+// ---- AUDIO PLAYER ----
+function formatTime(s) {
+  if (isNaN(s)) return '0:00';
+  const m = Math.floor(s / 60);
+  return `${m}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+}
+
+// Countdown state
+const CLIP_DURATION = 30;
+let countdownInterval = null;
+let countdownRemaining = CLIP_DURATION;
+const CIRCUMFERENCE = 138.2; // 2*PI*22
+
+function updateRing(remaining) {
+  const frac = remaining / CLIP_DURATION;
+  const offset = CIRCUMFERENCE * (1 - frac);
+  const ring = $('ringFill');
+  ring.style.strokeDashoffset = offset;
+  ring.className = 'ring-fill' + (remaining <= 5 ? ' urgent' : remaining === 0 ? ' done' : '');
+  $('countdownNum').textContent = remaining;
+}
+
+function startCountdown() {
+  clearInterval(countdownInterval);
+  countdownRemaining = CLIP_DURATION;
+  updateRing(countdownRemaining);
+  $('countdownWrap').classList.add('visible');
+  $('countdownTitle').textContent = 'Fragment speelt af...';
+  countdownInterval = setInterval(() => {
+    countdownRemaining--;
+    updateRing(countdownRemaining);
+    if (countdownRemaining <= 0) {
+      clearInterval(countdownInterval);
+      audio.pause();
+      isPlaying = false;
+      $('playBtn').textContent = '▶';
+      $('countdownTitle').textContent = 'Tijd is op! Raad nu...';
+    }
+  }, 1000);
+}
+
+function stopCountdown() {
+  clearInterval(countdownInterval);
+  countdownInterval = null;
+  $('countdownWrap').classList.remove('visible');
+}
+
+audio.addEventListener('timeupdate', () => {
+  // Clamp to 30s
+  if (audio.currentTime >= CLIP_DURATION) {
+    audio.pause();
+    audio.currentTime = CLIP_DURATION;
+    isPlaying = false;
+    $('playBtn').textContent = '▶';
+  }
+  const t = Math.min(audio.currentTime, CLIP_DURATION);
+  const pct = (t / CLIP_DURATION) * 100;
+  $('progressFill').style.width = pct + '%';
+  $('playerTime').textContent = formatTime(t) + ' / 0:30';
+});
+
+audio.addEventListener('ended', () => {
+  isPlaying = false;
+  $('playBtn').textContent = '▶';
+});
+
+function togglePlay() {
+  if (!audio.src) return;
+  if (isPlaying) {
+    audio.pause();
+    clearInterval(countdownInterval);
+    isPlaying = false;
+    $('playBtn').textContent = '▶';
+  } else {
+    audio.currentTime = 0;
+    audio.play().then(() => {
+      isPlaying = true;
+      $('playBtn').textContent = '⏸';
+      startCountdown();
+    }).catch(() => {});
+  }
+}
+
+function seekAudio(e) {
+  if (!audio.duration) return;
+  const rect = $('progressTrack').getBoundingClientRect();
+  const pct = Math.min((e.clientX - rect.left) / rect.width, 1);
+  audio.currentTime = Math.min(pct * CLIP_DURATION, CLIP_DURATION - 0.1);
+}
+
+function stopAudio() {
+  audio.pause();
+  audio.src = '';
+  isPlaying = false;
+  $('playBtn').textContent = '▶';
+  $('progressFill').style.width = '0%';
+  $('playerTime').textContent = '0:00 / 0:30';
+  stopCountdown();
+}
+
+function loadAudioForSong(song, autoplay) {
+  stopAudio();
+  const mp3 = getMp3(song);
+  const player = $('audioPlayer');
+  const notice = $('noMp3Notice');
+  if (mp3) {
+    $('playerTrack').textContent = '🎵 Druk ▶ om te starten';
+    $('playerTrack').className = 'player-track hidden-name';
+    player.classList.remove('no-file');
+    notice.style.display = 'none';
+    audio.src = mp3.url;
+    audio.load();
+    if (autoplay) {
+      audio.oncanplaythrough = () => {
+        audio.oncanplaythrough = null;
+        audio.currentTime = 0;
+        audio.play().then(() => {
+          isPlaying = true;
+          $('playBtn').textContent = '⏸';
+          $('playerTrack').textContent = '🎵 Luister goed...';
+          startCountdown();
+        }).catch(() => {
+          $('playerTrack').textContent = '🎵 Druk ▶ om te starten';
+        });
+      };
+    }
+  } else {
+    player.classList.add('no-file');
+    notice.style.display = 'block';
+  }
+}
+
+// ---- SCREENS ----
+function showScreen(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  $(id).classList.add('active');
+}
+
+function showHome() {
+  stopAudio();
+  $('headerScore').style.display = 'none';
+  showScreen('homeScreen');
+  $('bestScore').textContent = (currentUser && currentUser.bestScore > 0) ? currentUser.bestScore : (bestScore > 0 ? bestScore : '—');
+}
+
+function setTab(tab) {
+  $('tabMp3').classList.toggle('active', tab === 'mp3');
+  $('tabCsv').classList.toggle('active', tab === 'csv');
+  $('panelMp3').style.display = tab === 'mp3' ? 'block' : 'none';
+  $('panelCsv').style.display = tab === 'csv' ? 'block' : 'none';
+}
+
+// Settings
+document.querySelectorAll('#qCountOptions .opt-btn').forEach(btn => {
+  btn.addEventListener('click', function() {
+    document.querySelectorAll('#qCountOptions .opt-btn').forEach(b => b.classList.remove('selected'));
+    this.classList.add('selected');
+    settings.count = parseInt(this.dataset.val);
+  });
+});
+document.querySelectorAll('#modeOptions .opt-btn').forEach(btn => {
+  btn.addEventListener('click', function() {
+    document.querySelectorAll('#modeOptions .opt-btn').forEach(b => b.classList.remove('selected'));
+    this.classList.add('selected');
+    settings.mode = this.dataset.val;
+  });
+});
+
+function startQuiz() {
+  let pool;
+  if (activePlFilter) {
+    pool = [...activePlFilter];
+    activePlFilter = null; // reset after use
+  } else {
+    const hasMp3s = Object.keys(mp3Map).length > 0;
+    pool = hasMp3s ? allSongs().filter(s => getMp3(s)) : allSongs();
+  }
+  const shuffled = [...pool].sort(() => Math.random() - 0.5);
+  queue = shuffled.slice(0, Math.min(settings.count, shuffled.length));
+  current = 0;
+  totalScore = 0;
+  history = [];
+  answered = false;
+  $('headerScore').style.display = '';
+  $('headerScoreVal').textContent = 0;
+  showScreen('quizScreen');
+  loadQuestion();
+}
+
+function loadQuestion() {
+  answered = false;
+  const song = queue[current];
+  const total = queue.length;
+
+  $('progressBar').style.width = (current / total * 100) + '%';
+  $('qNum').textContent = `Vraag ${current + 1} / ${total}`;
+
+  const modeLabels = { all: 'Alles raden', song: 'Nummer raden', artist: 'Artiest raden', year: 'Jaar raden' };
+  $('qTag').textContent = modeLabels[settings.mode];
+
+  const m = settings.mode;
+  $('cardTitle').textContent = (m === 'song' || m === 'all') ? '?' : song.t;
+  $('cardArtist').innerHTML = (m === 'artist' || m === 'all') ? '' : `<b>${song.a}</b>`;
+  $('cardArtist').style.display = (m === 'artist' || m === 'all') ? 'none' : 'block';
+  $('yearReveal').textContent = '';
+  $('yearReveal').classList.remove('show');
+
+  $('songGuessWrap').style.display = (m === 'song' || m === 'all') ? 'block' : 'none';
+  $('artistGuessWrap').style.display = (m === 'artist' || m === 'all') ? 'block' : 'none';
+  $('yearGuessWrap').style.display = (m === 'year' || m === 'all') ? 'block' : 'none';
+
+  ['songGuess', 'artistGuess', 'yearGuess'].forEach(id => {
+    const el = $(id);
+    if (el) { el.value = ''; el.className = 'guess-input'; el.disabled = false; }
+  });
+
+  const fb2 = $('feedbackBar'); fb2.className = 'feedback-bar'; fb2.style.display = 'none';
+  $('submitRow').classList.remove('hidden');
+  $('nextRow').classList.add('hidden');
+
+  loadAudioForSong(song, true);
+
+  document.onkeydown = e => { if (e.key === 'Enter' && !answered) submitGuess(); };
+}
+
+function normalize(str) {
+  return str.toLowerCase()
+    // Normalize accented characters to base latin
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    // Common special chars
+    .replace(/[ñ]/g, 'n')
+    .replace(/[æ]/g, 'ae')
+    .replace(/[ø]/g, 'o')
+    .replace(/[ß]/g, 'ss')
+    .replace(/[''`]/g, "'")
+    .replace(/[^a-z0-9\s']/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({length: m+1}, (_, i) => Array.from({length: n+1}, (_, j) => i === 0 ? j : j === 0 ? i : 0));
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = a[i-1] === b[j-1] ? dp[i-1][j-1] : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
+  return dp[m][n];
+}
+
+function similarity(a, b) {
+  a = normalize(a); b = normalize(b);
+  if (!a) return 0;
+  if (a === b) return 1;
+  if (b.includes(a) || a.includes(b)) return 0.9;
+  // Levenshtein: allow ~1 error per 8 chars (min 1 allowed for short words)
+  const maxDist = Math.max(1, Math.floor(Math.max(a.length, b.length) / 8));
+  if (levenshtein(a, b) <= maxDist) return 0.85;
+  // Word-level: check each word in guess against each word in answer
+  const aw = a.split(' ');
+  const bw = b.split(' ');
+  const matchedB = bw.filter(bword => {
+    if (bword.length <= 2) return aw.includes(bword);
+    return aw.some(aword => {
+      if (aword === bword) return true;
+      const wd = Math.max(1, Math.floor(Math.max(aword.length, bword.length) / 6));
+      return levenshtein(aword, bword) <= wd;
+    });
+  });
+  return matchedB.length / Math.max(aw.length, bw.length);
+}
+
+function submitGuess() {
+  if (answered) return;
+  answered = true;
+  stopAudio();
+
+  // Reveal song name in player
+  $('playerTrack').textContent = queue[current].t + ' — ' + queue[current].a;
+  $('playerTrack').className = 'player-track';
+
+  const song = queue[current];
+  const m = settings.mode;
+  let points = 0, correct = 0, total = 0, msgs = [];
+
+  if (m === 'song' || m === 'all') {
+    total++;
+    const val = $('songGuess').value.trim();
+    const sim = similarity(val, song.t);
+    if (val.length > 0 && sim >= 0.75) { points += 10; correct++; $('songGuess').classList.add('correct'); msgs.push(`✓ ${song.t}`); }
+    else { $('songGuess').classList.add('wrong'); msgs.push(`✗ Nummer was: "${song.t}"`); }
+    $('cardTitle').textContent = song.t;
+  }
+
+  if (m === 'artist' || m === 'all') {
+    total++;
+    const val = $('artistGuess').value.trim();
+    // For CSV songs, song.a1 holds the first artist; for regular songs use song.a
+    const checkArtist = song.a1 || song.a;
+    const sim = similarity(val, checkArtist);
+    if (val.length > 0 && sim >= 0.65) { points += 10; correct++; $('artistGuess').classList.add('correct'); msgs.push(`✓ ${song.a}`); }
+    else { $('artistGuess').classList.add('wrong'); msgs.push(`✗ Artiest was: ${checkArtist}${song.a1 ? ' (e.a.)' : ''}`); }
+    $('cardArtist').innerHTML = `<b>${song.a}</b>`;
+    $('cardArtist').style.display = 'block';
+  }
+
+  if (m === 'year' || m === 'all') {
+    total++;
+    const val = parseInt($('yearGuess').value);
+    const diff = Math.abs(val - song.y);
+    const yearVal = $('yearGuess').value.trim();
+    if (yearVal.length > 0 && diff === 0) { points += 10; correct++; $('yearGuess').classList.add('correct'); msgs.push(`✓ ${song.y} (precies!)`); }
+    else if (yearVal.length > 0 && diff <= 2) { points += 5; correct += 0.5; $('yearGuess').classList.add('correct'); msgs.push(`✓ ${song.y} (±${diff} jaar)`); }
+    else { $('yearGuess').classList.add('wrong'); msgs.push(`✗ Jaar was: ${song.y} (jij: ${yearVal || '?'})`); }
+    $('yearReveal').textContent = song.y;
+    setTimeout(() => $('yearReveal').classList.add('show'), 50);
+  }
+
+  ['songGuess', 'artistGuess', 'yearGuess'].forEach(id => { const el = $(id); if (el) el.disabled = true; });
+
+  // Ensure wrong fields are marked red
+  if (m === 'song' || m === 'all') {
+    if (!$('songGuess').classList.contains('correct')) $('songGuess').classList.add('wrong');
+  }
+  if (m === 'artist' || m === 'all') {
+    if (!$('artistGuess').classList.contains('correct')) $('artistGuess').classList.add('wrong');
+  }
+  if (m === 'year' || m === 'all') {
+    if (!$('yearGuess').classList.contains('correct')) $('yearGuess').classList.add('wrong');
+  }
+
+  // Build colored feedback message
+  const coloredMsgs = msgs.map(msg => {
+    const ok = msg.startsWith('✓');
+    return `<span style="color:${ok ? 'var(--correct)' : 'var(--wrong)'}">${msg}</span>`;
+  }).join('<span style="color:var(--muted)"> | </span>');
+
+  const fb = $('feedbackBar');
+  fb.style.display = 'flex';
+  const pct = correct / total;
+  if (pct >= 0.99) {
+    fb.className = 'feedback-bar correct';
+    $('feedbackIcon').textContent = '🎉';
+    $('feedbackText').innerHTML = `Perfect! +${points} punten`;
+  } else if (pct > 0) {
+    fb.className = 'feedback-bar neutral';
+    $('feedbackIcon').textContent = '±';
+    $('feedbackText').innerHTML = `+${points} punten &nbsp;·&nbsp; ${coloredMsgs}`;
+  } else {
+    fb.className = 'feedback-bar wrong';
+    $('feedbackIcon').textContent = '✗';
+    $('feedbackText').innerHTML = coloredMsgs;
+  }
+
+  totalScore += points;
+  $('headerScoreVal').textContent = totalScore;
+  history.push({ song, points, maxPoints: total * 10, correct: pct });
+
+  $('submitRow').classList.add('hidden');
+  $('nextRow').classList.remove('hidden');
+  document.onkeydown = e => { if (e.key === 'Enter') nextQuestion(); };
+}
+
+function nextQuestion() {
+  current++;
+  if (current >= queue.length) showResults();
+  else loadQuestion();
+}
+
+function showResults() {
+  stopAudio();
+  $('progressBar').style.width = '100%';
+  $('finalScore').textContent = totalScore;
+  const maxPossible = queue.length * (settings.mode === 'all' ? 30 : 10);
+  $('scoreLabel').textContent = `van de ${maxPossible} punten`;
+
+  const full = history.filter(h => h.correct >= 0.99).length;
+  const part = history.filter(h => h.correct > 0 && h.correct < 0.99).length;
+  const none = history.filter(h => h.correct === 0).length;
+  $('fullCorrect').textContent = full;
+  $('partCorrect').textContent = part;
+  $('noneCorrect').textContent = none;
+
+  if (totalScore > bestScore) { bestScore = totalScore; localStorage.setItem('hitsterBest', bestScore); }
+  updateUserScore(totalScore, queue.length * (settings.mode === 'all' ? 30 : 10));
+  renderLeaderboard();
+
+  const hl = $('historyList');
+  hl.innerHTML = '<h3>Alle nummers</h3>';
+  history.forEach(h => {
+    const dotClass = h.correct >= 0.99 ? 'full' : h.correct > 0 ? 'partial' : 'none';
+    const div = document.createElement('div');
+    div.className = 'history-item';
+    div.innerHTML = `
+      <div class="h-dot ${dotClass}"></div>
+      <div class="h-song"><div class="title">${h.song.t}</div><div class="artist">${h.song.a} · ${h.song.y}</div></div>
+      <div class="h-pts" style="color:${h.correct>=0.99?'var(--correct)':h.correct>0?'var(--accent2)':'var(--muted)'}">${h.points}</div>
+    `;
+    hl.appendChild(div);
+  });
+
+  showScreen('resultsScreen');
+}
+
+
+// ---- PLAYLISTS ----
+// Stored as array of { name, songIndices: [idx, ...] } in localStorage
+let playlists = JSON.parse(localStorage.getItem('hitsterPlaylists') || '[]');
+let activePlFilter = null; // null = use mp3Map pool, else array of songs
+
+function savePlaylists() {
+  localStorage.setItem('hitsterPlaylists', JSON.stringify(playlists));
+}
+
+function renderPlaylists() {
+  const el = $('playlistList');
+  if (playlists.length === 0) {
+    el.innerHTML = '<div class="no-playlist-msg">Nog geen opgeslagen playlists.</div>';
+    return;
+  }
+  el.innerHTML = '';
+  playlists.forEach((pl, i) => {
+    const row = document.createElement('div');
+    row.className = 'playlist-row';
+    row.innerHTML = `
+      <div>
+        <div class="playlist-name">${pl.name}</div>
+        <div class="playlist-meta">${pl.songIndices.length} nummers</div>
+      </div>
+      <button class="pl-play-btn" onclick="loadPlaylist(${i})">▶ Spelen</button>
+      <button class="pl-del-btn" onclick="deletePlaylist(${i})">✕</button>
+    `;
+    el.appendChild(row);
+  });
+}
+
+function savePlaylist() {
+  const name = $('plNameInput').value.trim();
+  if (!name) { $('plNameInput').focus(); return; }
+  // Save indices of currently matched songs
+  const matchedIndices = Object.keys(mp3ByIndex).map(Number);
+  if (matchedIndices.length === 0) {
+    alert('Upload eerst nummers voordat je een playlist opslaat.');
+    return;
+  }
+  playlists.push({ name, songIndices: matchedIndices });
+  savePlaylists();
+  $('plNameInput').value = '';
+  renderPlaylists();
+}
+
+function deletePlaylist(i) {
+  playlists.splice(i, 1);
+  savePlaylists();
+  renderPlaylists();
+}
+
+function loadPlaylist(i) {
+  const pl = playlists[i];
+  // Set active filter to only songs in this playlist that have an MP3 loaded
+  activePlFilter = pl.songIndices
+    .map(idx => allSongs()[idx])
+    .filter(s => s && getMp3(s));
+  if (activePlFilter.length === 0) {
+    alert('Upload eerst de bijbehorende bestanden voor deze playlist.');
+    activePlFilter = null;
+    return;
+  }
+  // Update count option to match playlist size
+  settings.count = activePlFilter.length;
+  startQuiz();
+}
+
+
+function confirmStop() {
+  if (confirm('Quiz stoppen en terug naar het hoofdmenu?')) {
+    stopAudio();
+    showHome();
+  }
+}
+
+
+// ---- USER / LOGIN SYSTEM ----
+// profiles: [{ id, name, gamesPlayed, bestScore, totalScore }]
+let profiles = JSON.parse(localStorage.getItem('hitsterProfiles') || '[]');
+let currentUser = null;
+
+function saveProfiles() {
+  localStorage.setItem('hitsterProfiles', JSON.stringify(profiles));
+}
+
+function getInitial(name) {
+  return name.trim()[0].toUpperCase();
+}
+
+function renderProfileList() {
+  const el = $('profileList');
+  el.innerHTML = '';
+  if (profiles.length === 0) {
+    el.innerHTML = '<p style="color:var(--muted);font-size:13px;margin-bottom:16px">Nog geen profielen. Maak er een aan!</p>';
+    return;
+  }
+  profiles.forEach((p, i) => {
+    const div = document.createElement('div');
+    div.className = 'profile-card';
+    div.innerHTML = `
+      <div class="profile-avatar">${getInitial(p.name)}</div>
+      <div class="profile-info">
+        <div class="pname">${p.name}</div>
+        <div class="pstats">${p.gamesPlayed} spellen · Beste score: ${p.bestScore}</div>
+      </div>
+      <button class="profile-del" onclick="deleteProfile(event,${i})">✕</button>
+    `;
+    div.addEventListener('click', (e) => { if (!e.target.classList.contains('profile-del')) loginAs(i); });
+    el.appendChild(div);
+  });
+}
+
+function toggleNewProfile() {
+  const f = $('newProfileForm');
+  f.style.display = f.style.display === 'none' ? 'block' : 'none';
+  if (f.style.display === 'block') $('newProfileName').focus();
+}
+
+function createProfile() {
+  const name = $('newProfileName').value.trim();
+  if (!name) { $('newProfileName').focus(); return; }
+  if (profiles.find(p => p.name.toLowerCase() === name.toLowerCase())) {
+    alert('Deze naam bestaat al!'); return;
+  }
+  profiles.push({ id: Date.now(), name, gamesPlayed: 0, bestScore: 0, totalScore: 0 });
+  saveProfiles();
+  $('newProfileName').value = '';
+  $('newProfileForm').style.display = 'none';
+  loginAs(profiles.length - 1);
+}
+
+function deleteProfile(e, i) {
+  e.stopPropagation();
+  if (!confirm(`Profiel "${profiles[i].name}" verwijderen?`)) return;
+  profiles.splice(i, 1);
+  saveProfiles();
+  renderProfileList();
+}
+
+function loginAs(i) {
+  currentUser = profiles[i];
+  // Update header chip
+  $('userChip').style.display = 'flex';
+  $('userChipAvatar').textContent = getInitial(currentUser.name);
+  $('userChipName').textContent = currentUser.name;
+  // Update bestScore display
+  bestScore = currentUser.bestScore;
+  showHome();
+}
+
+function switchUser() {
+  currentUser = null;
+  $('userChip').style.display = 'none';
+  renderProfileList();
+  showScreen('loginScreen');
+}
+
+function updateUserScore(score, maxScore) {
+  if (!currentUser) return;
+  const idx = profiles.findIndex(p => p.id === currentUser.id);
+  if (idx < 0) return;
+  profiles[idx].gamesPlayed++;
+  profiles[idx].totalScore += score;
+  if (score > profiles[idx].bestScore) profiles[idx].bestScore = score;
+  currentUser = profiles[idx];
+  saveProfiles();
+  // Update chip
+  $('userChipName').textContent = currentUser.name;
+}
+
+function renderLeaderboard() {
+  const el = $('leaderboard');
+  if (profiles.length === 0) { el.innerHTML = ''; return; }
+  const sorted = [...profiles].sort((a, b) => b.bestScore - a.bestScore);
+  const rankClass = ['gold','silver','bronze'];
+  el.innerHTML = '<h3>🏆 Klassement</h3>';
+  sorted.forEach((p, i) => {
+    const isMe = currentUser && p.id === currentUser.id;
+    const div = document.createElement('div');
+    div.className = 'lb-row' + (isMe ? ' me' : '');
+    div.innerHTML = `
+      <div class="lb-rank ${rankClass[i] || ''}">${i + 1}</div>
+      <div class="lb-name">${p.name}${isMe ? ' <span style="color:var(--accent);font-size:11px">← jij</span>' : ''}</div>
+      <div style="text-align:right">
+        <div class="lb-score">${p.bestScore}</div>
+        <div class="lb-games">${p.gamesPlayed} spellen</div>
+      </div>
+    `;
+    el.appendChild(div);
+  });
+}
+
+// ---- CSV IMPORT ----
+function parseCSVLine(line) {
+  const result = [];
+  let cur = '', inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"') {
+      if (inQ && line[i + 1] === '"') { cur += '"'; i++; }
+      else inQ = !inQ;
+    } else if (c === ',' && !inQ) {
+      result.push(cur); cur = '';
+    } else {
+      cur += c;
+    }
+  }
+  result.push(cur);
+  return result;
+}
+
+function parseSpotifyCSV(text) {
+  // Strip BOM
+  text = text.replace(/^\uFEFF/, '');
+  const lines = text.split(/\r?\n/);
+  if (lines.length < 2) return [];
+
+  const header = parseCSVLine(lines[0]);
+  const col = name => header.findIndex(h => h.trim().toLowerCase() === name.toLowerCase());
+  const titleCol  = col('Track Name');
+  const artistCol = col('Artist Name(s)');
+  const dateCol   = col('Release Date');
+
+  if (titleCol < 0 || artistCol < 0) return [];
+
+  const songs = [];
+  for (let i = 1; i < lines.length; i++) {
+    if (!lines[i].trim()) continue;
+    const cols = parseCSVLine(lines[i]);
+    const title  = cols[titleCol]?.trim()
+      .replace(/\s*\(.*?\)/g, '')   // alles tussen ()
+      .replace(/\s*\[.*?\]/g, '')   // alles tussen []
+      .replace(/\s*[-–].*$/, '')    // alles na een streepje
+      .trim();
+    const rawArtist = cols[artistCol]?.trim() || '';
+    const date   = cols[dateCol]?.trim() || '';
+
+    if (!title || title === 'undefined' || !rawArtist || rawArtist === 'undefined') continue;
+
+    // First artist = everything before first semicolon
+    const firstArtist = rawArtist.split(';')[0].trim();
+    // Display artist = all artists with semicolons replaced by commas
+    const displayArtist = rawArtist.split(';').map(a => a.trim()).join(', ');
+
+    const yearMatch = date.match(/(\d{4})/);
+    const year = yearMatch ? parseInt(yearMatch[1]) : 0;
+
+    songs.push({ t: title, a: displayArtist, a1: firstArtist, y: year });
+  }
+  return songs;
+}
+
+function handleCsvFile(file) {
+  const reader = new FileReader();
+  reader.onload = async e => {
+    const songs = parseSpotifyCSV(e.target.result);
+    if (!songs.length) {
+      $('csvStats').style.display = 'flex';
+      $('csvStatus').textContent = '⚠️ Geen nummers gevonden — controleer het CSV-formaat';
+      return;
+    }
+
+    // Merge into customSongs, skip duplicates
+    let added = 0;
+    const newSongs = [];
+    songs.forEach(s => {
+      const exists = allSongs().some(x =>
+        normStr(x.t) === normStr(s.t) && normStr(x.a1 || x.a) === normStr(s.a1)
+      );
+      if (!exists) { customSongs.push(s); newSongs.push(s); added++; }
+    });
+
+    // Sla nieuwe songs op in Supabase
+    $('csvStatus').textContent = added > 0 ? `${added} opslaan...` : 'Alles al bekend';
+    for (const s of newSongs) {
+      await upsertSong(s);
+    }
+    saveCustomSongs();
+
+    // Update song count pill
+    $('totalSongs').textContent = allSongs().length;
+
+    $('csvStats').style.display = 'flex';
+    $('csvCount').textContent = songs.length;
+    $('csvStatus').textContent = added > 0 ? `${added} nieuw toegevoegd` : 'Alles al bekend';
+
+    // Show list (max 50)
+    const list = $('csvList');
+    list.innerHTML = '';
+    songs.slice(0, 50).forEach(s => {
+      const div = document.createElement('div');
+      div.className = 'matched-item';
+      div.innerHTML = `
+        <div class="match-dot" style="background:#1DB954"></div>
+        <div class="match-info">
+          <div class="song-name">${s.t} <span style="color:var(--muted);font-size:11px;font-weight:400">— ${s.a}</span></div>
+          <div class="file-name">📅 ${s.y || 'jaar onbekend'}</div>
+        </div>`;
+      list.appendChild(div);
+    });
+    if (songs.length > 50) {
+      const more = document.createElement('div');
+      more.style.cssText = 'color:var(--muted);font-size:12px;padding:8px 0';
+      more.textContent = `... en nog ${songs.length - 50} nummers`;
+      list.appendChild(more);
+    }
+
+    // Toon Discogs blok altijd na CSV-import (ook als nummers al bekend waren)
+    const csvSongsInDb = customSongs.filter(s => s.a1);
+    if (csvSongsInDb.length > 0) {
+      $('mbWrap').classList.add('visible');
+      $('mbLabel').textContent = '🎵 Originele uitjaren ophalen via Discogs';
+      $('mbBarFill').style.width = '0%';
+      $('mbCount').textContent = '';
+      mbSetButtons('idle');
+    }
+  };
+  reader.readAsText(file, 'UTF-8');
+}
+
+async function clearCsv() {
+  stopDiscogs();
+  const csvSongs = customSongs.filter(s => s.a1);
+  for (const s of csvSongs) {
+    await deleteSongFromDb(s);
+  }
+  customSongs = customSongs.filter(s => !s.a1);
+  saveCustomSongs();
+  $('csvFileInput').value = '';
+  $('csvStats').style.display = 'none';
+  $('csvList').innerHTML = '';
+  $('mbWrap').classList.remove('visible');
+  $('totalSongs').textContent = allSongs().length;
+}
+
+// ---- JAAR-OPHAAL VIA DISCOGS ----
+let mbQueue = [];
+let mbIndex = 0;
+let mbPaused = false;
+let mbRunning = false;
+let mbTimeout = null;
+const MB_DELAY = 1100; // ~1 request/sec
+
+function getDiscogsToken() {
+  return localStorage.getItem('discogsToken') || '';
+}
+
+async function fetchDiscogsYear(song) {
+  const token = getDiscogsToken();
+  if (!token) throw new Error('Geen Discogs token');
+
+  const artist = song.a1 || song.a.split(',')[0].trim();
+  const cleanTitle = song.t
+    .replace(/\[.*?\]/g, '')
+    .replace(/\(.*?\)/g, '')
+    .replace(/\s+-\s+.*$/, '')
+    .trim();
+
+  // Zoek op type=master — geeft origineel uitjaar direct
+  const url = `https://api.discogs.com/database/search?type=master&release_title=${encodeURIComponent(cleanTitle)}&artist=${encodeURIComponent(artist)}&per_page=5&page=1`;
+  const resp = await fetch(url, {
+    headers: {
+      'User-Agent': 'SongGuesser/1.0',
+      'Authorization': `Discogs token=${token}`
+    }
+  });
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  const data = await resp.json();
+  const results = data.results || [];
+  if (!results.length) return null;
+
+  const years = results
+    .map(r => parseInt(r.year))
+    .filter(y => !isNaN(y) && y >= 1900 && y <= new Date().getFullYear());
+
+  return years.length ? Math.min(...years) : null;
+}
+
+
+async function fetchYear(song) {
+  try {
+    const year = await fetchDiscogsYear(song);
+    if (year) return { year, source: 'Discogs' };
+  } catch(e) {
+    console.warn('Discogs fout voor', song.t, ':', e.message);
+  }
+  return null;
+}
+
+// mbContext: 'csv' of 'db' — bepaalt welke UI-elementen worden bijgewerkt
+let mbContext = 'csv';
+
+function mbEl(suffix) {
+  // Geeft het juiste element terug op basis van de huidige context
+  const prefix = mbContext === 'db' ? 'dbMb' : 'mb';
+  return $(prefix + suffix);
+}
+
+function mbUpdateUI() {
+  const total = mbQueue.length;
+  const done  = mbIndex;
+  const pct   = total ? (done / total * 100) : 0;
+  mbEl('BarFill').style.width = pct + '%';
+  mbEl('Count').textContent   = `${done} / ${total}`;
+}
+
+function mbSetButtons(state) {
+  mbEl('StartBtn').style.display  = state === 'idle'    ? '' : 'none';
+  mbEl('PauseBtn').style.display  = state === 'running' ? '' : 'none';
+  mbEl('ResumeBtn').style.display = state === 'paused'  ? '' : 'none';
+  mbEl('StopBtn').style.display   = (state === 'running' || state === 'paused') ? '' : 'none';
+}
+
+async function mbProcessNext() {
+  if (mbPaused || !mbRunning) return;
+  if (mbIndex >= mbQueue.length) {
+    mbRunning = false;
+    mbEl('Label').textContent = '✓ Klaar! Uitjaren bijgewerkt via Discogs';
+    mbSetButtons('done');
+    saveCustomSongs();
+    if (mbContext === 'db') renderDatabase();
+    return;
+  }
+
+  const song = mbQueue[mbIndex];
+  mbEl('Label').textContent = `🔍 Zoeken: ${song.t}`;
+
+  try {
+    const result = await fetchYear(song);
+    if (result) {
+      const idx = customSongs.indexOf(song);
+      if (idx >= 0) {
+        customSongs[idx].y = result.year;
+        customSongs[idx].mbVerified = true;
+        customSongs[idx].yearSource = result.source;
+      }
+      updateCsvListRow(song, result.year, result.source);
+      // Sla bijgewerkt jaar op in Supabase
+      await upsertSong(song);
+      saveCustomSongs();
+    }
+  } catch(e) {
+    console.warn('Jaar ophalen mislukt voor', song.t, e);
+  }
+
+  mbIndex++;
+  mbUpdateUI();
+  mbTimeout = setTimeout(mbProcessNext, MB_DELAY);
+}
+
+function updateCsvListRow(song, year, source) {
+  const list = $('csvList');
+  list.querySelectorAll('.matched-item').forEach(row => {
+    const nameEl = row.querySelector('.song-name');
+    if (nameEl && nameEl.textContent.startsWith(song.t)) {
+      const dateEl = row.querySelector('.file-name');
+      if (dateEl) dateEl.textContent = `📅 ${year} ✓ ${source || 'Discogs'}`;
+    }
+  });
+}
+
+function startDiscogs() {
+  mbContext = 'csv';
+  mbQueue = [];
+  for (let i = 0; i < customSongs.length; i++) {
+    if (customSongs[i].a1) mbQueue.push(customSongs[i]);
+  }
+  if (!mbQueue.length) {
+    mbEl('Label').textContent = '⚠️ Geen CSV-nummers gevonden om te verwerken';
+    return;
+  }
+  mbIndex   = 0;
+  mbPaused  = false;
+  mbRunning = true;
+  mbQueue.forEach(s => { s.mbVerified = false; });
+  mbSetButtons('running');
+  mbUpdateUI();
+  mbProcessNext();
+}
+
+function startDiscogsDb() {
+  mbContext = 'db';
+  mbQueue = [];
+  for (let i = 0; i < customSongs.length; i++) {
+    if (customSongs[i].a1 && !customSongs[i].mbVerified) mbQueue.push(customSongs[i]);
+  }
+  if (!mbQueue.length) {
+    mbEl('Label').textContent = '✓ Alle CSV-nummers zijn al geverifieerd';
+    mbEl('BarFill').style.width = '100%';
+    return;
+  }
+  mbIndex   = 0;
+  mbPaused  = false;
+  mbRunning = true;
+  mbSetButtons('running');
+  mbUpdateUI();
+  mbProcessNext();
+}
+
+function pauseDiscogs() {
+  mbPaused = true;
+  clearTimeout(mbTimeout);
+  mbEl('Label').textContent = '⏸ Gepauzeerd';
+  mbSetButtons('paused');
+}
+
+function resumeDiscogs() {
+  mbPaused = false;
+  mbEl('Label').textContent = `🔍 Zoeken: ${mbQueue[mbIndex]?.t || ''}`;
+  mbSetButtons('running');
+  mbProcessNext();
+}
+
+function stopDiscogs() {
+  mbRunning = false;
+  mbPaused  = false;
+  clearTimeout(mbTimeout);
+  saveCustomSongs();
+  mbEl('Label').textContent = `Gestopt na ${mbIndex} van ${mbQueue.length} nummers`;
+  mbSetButtons('idle');
+  if (mbContext === 'db') renderDatabase();
+}
+
+// ---- DATABASE SCREEN ----
+let dbFilter = 'all';
+let dbSort   = { key: 't', asc: true };
+
+function showDatabase() {
+  stopAudio();
+  $('headerScore').style.display = 'none';
+  // Toon MB-blok alleen als er nog ongevalideerde CSV-nummers zijn
+  const unverified = customSongs.filter(s => s.a1 && !s.mbVerified);
+  const dbMbWrap = $('dbMbWrap');
+  if (unverified.length > 0) {
+    dbMbWrap.classList.add('visible');
+    $('dbMbLabel').textContent = `🎵 ${unverified.length} nummer${unverified.length !== 1 ? 's' : ''} nog niet geverifieerd via Discogs`;
+    $('dbMbBarFill').style.width = '0%';
+    $('dbMbCount').textContent = '';
+    mbContext = 'db';
+    mbSetButtons('idle');
+  } else {
+    dbMbWrap.classList.remove('visible');
+  }
+  renderDatabase();
+  showScreen('databaseScreen');
+}
+
+function setDbFilter(f) {
+  dbFilter = f;
+  ['All','Builtin','Csv','Mb'].forEach(n => {
+    $('dbFilter' + n).classList.toggle('active', f === n.toLowerCase());
+  });
+  renderDatabase();
+}
+
+function setDbSort(key) {
+  if (dbSort.key === key) dbSort.asc = !dbSort.asc;
+  else { dbSort.key = key; dbSort.asc = true; }
+  ['T','Y'].forEach(n => {
+    const th = $('dbSort' + n);
+    th.classList.toggle('sorted', dbSort.key === n.toLowerCase());
+    th.querySelector('.sort-arrow').textContent =
+      dbSort.key === n.toLowerCase() ? (dbSort.asc ? '↑' : '↓') : '↕';
+  });
+  renderDatabase();
+}
+
+function getSongSource(song) {
+  if (song.mbVerified) return 'csv-mb';
+  return 'csv';
+}
+
+function getSongSourceLabel(song) {
+  if (!song.mbVerified) return 'CSV';
+  return `✓ ${song.yearSource || 'Discogs'}`;
+}
+
+function renderDatabase() {
+  const query = ($('dbSearch').value || '').toLowerCase().trim();
+  const songs = allSongs();
+
+  let filtered = songs.filter(s => {
+    const src = getSongSource(s);
+    if (dbFilter === 'mb'      && src !== 'csv-mb')  return false;
+    if (query) {
+      const hay = (s.t + ' ' + s.a).toLowerCase();
+      if (!hay.includes(query)) return false;
+    }
+    return true;
+  });
+
+  // Sort
+  filtered.sort((a, b) => {
+    let va = a[dbSort.key], vb = b[dbSort.key];
+    if (typeof va === 'string') va = va.toLowerCase();
+    if (typeof vb === 'string') vb = vb.toLowerCase();
+    if (va < vb) return dbSort.asc ? -1 : 1;
+    if (va > vb) return dbSort.asc ?  1 : -1;
+    return 0;
+  });
+
+  $('dbStats').textContent = `${filtered.length} van ${songs.length} nummers`;
+
+  const tbody = $('dbTableBody');
+  tbody.innerHTML = '';
+
+  if (!filtered.length) {
+    $('dbEmpty').classList.remove('hidden');
+    return;
+  }
+  $('dbEmpty').classList.add('hidden');
+
+  filtered.forEach((song, i) => {
+    const src = getSongSource(song);
+    const srcLabel = getSongSourceLabel(song);
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>
+        <div class="db-title">${song.t}</div>
+        <div class="db-artist">${song.a}</div>
+      </td>
+      <td><span class="db-year">${song.y || '?'}</span></td>
+      <td><span class="db-source ${src}">${srcLabel}</span></td>
+      <td>
+        <button class="db-del-btn" onclick="deleteDbSong(this, '${encodeURIComponent(song.t)}', '${encodeURIComponent(song.a)}')"
+title="Verwijderen">✕</button>
+      </td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+async function deleteDbSong(btn, encTitle, encArtist) {
+  const title  = decodeURIComponent(encTitle);
+  const artist = decodeURIComponent(encArtist);
+  if (!confirm(`"${title}" verwijderen uit de database?`)) return;
+  const idx = customSongs.findIndex(s => s.t === title && s.a === artist);
+  if (idx >= 0) {
+    const song = customSongs[idx];
+    await deleteSongFromDb(song);
+    customSongs.splice(idx, 1);
+    saveCustomSongs();
+    $('totalSongs').textContent = allSongs().length;
+    btn.closest('tr').remove();
+    const remaining = $('dbTableBody').querySelectorAll('tr').length;
+    $('dbStats').textContent = `${remaining} van ${allSongs().length} nummers`;
+  }
+}
+
+// ---- DISCOGS TOKEN ----
+function saveDiscogsToken() {
+  const token = $('discogsToken').value.trim();
+  if (!token) {
+    showDiscogsStatus('⚠️ Vul een token in', 'var(--wrong)');
+    return;
+  }
+  localStorage.setItem('discogsToken', token);
+  showDiscogsStatus('✓ Token opgeslagen!', 'var(--correct)');
+}
+
+function showDiscogsStatus(msg, color) {
+  const el = $('discogsTokenStatus');
+  if (!el) return;
+  el.textContent = msg;
+  el.style.color = color;
+  el.style.display = 'block';
+  setTimeout(() => { el.style.display = 'none'; }, 3000);
+}
+
+// Bind CSV input + drag-drop
+document.addEventListener('DOMContentLoaded', () => {
+  const csvInput = $('csvFileInput');
+  const csvZone  = $('csvUploadZone');
+  if (csvInput) csvInput.addEventListener('change', e => { if (e.target.files[0]) handleCsvFile(e.target.files[0]); });
+  if (csvZone) {
+    csvZone.addEventListener('dragover',  e => { e.preventDefault(); csvZone.classList.add('drag'); });
+    csvZone.addEventListener('dragleave', () => csvZone.classList.remove('drag'));
+    csvZone.addEventListener('drop', e => {
+      e.preventDefault(); csvZone.classList.remove('drag');
+      if (e.dataTransfer.files[0]) handleCsvFile(e.dataTransfer.files[0]);
+    });
+  }
+});
+
+// Init
+(function() {
+  const token = localStorage.getItem('discogsToken');
+  if (token) { const el = $('discogsToken'); if (el) el.value = token; }
+})();
+renderPlaylists();
+renderProfileList();
+showScreen('loginScreen');
+
+// Laad songs uit Supabase, daarna MP3s uit IndexedDB
+loadCustomSongs().then(() => loadMp3sFromIdb());
+</script>
+</body>
+</html>
